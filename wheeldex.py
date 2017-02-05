@@ -1,6 +1,7 @@
 import os
 from enum import Enum
 import sys
+from typing import Iterable
 import zipfile
 
 class ModuleType(Enum):
@@ -9,6 +10,68 @@ class ModuleType(Enum):
     extension = 3
     package = 4
     namespace_package = 5
+
+class FoundModule:
+    def __init__(self, path_in_archive, ext, modtype):
+        self.path_in_archive = path_in_archive
+        self.ext = ext
+        parts = self.path_in_archive.split('/')
+        # TODO: does __init__.pyc work?
+        if len(parts) > 1 and parts[-1] == '__init__.py':
+            modtype = ModuleType.package
+        self.modtype = modtype
+
+    def __hash__(self):
+        return hash(self.path_in_archive)
+
+    def __eq__(self, other):
+        return isinstance(other, FoundModule) \
+               and self.path_in_archive == other.path_in_archive
+
+    def __repr__(self):
+        return 'FoundModule({!r}, {!r}, {!r})'.format(
+            self.path_in_archive, self.ext, self.modtype
+        )
+
+    @property
+    def path_in_site_packages(self):
+        parts = self.path_in_archive.split('/')
+        if parts[0].endswith('.dist-info'):
+            return None
+        elif parts[0].endswith('.data'):
+            if len(parts) > 2 and parts[1] in ('platlib', 'purelib'):
+                return '/'.join(parts[2:])
+            return None
+        else:
+            return self.path_in_archive
+
+    @property
+    def module_name(self):
+        parts = self.path_in_site_packages.split('/')
+        if self.modtype is ModuleType.package:
+            return '.'.join(parts[:-1])
+        else:
+            terminal_name = parts[-1][:-len(self.ext)]
+            return '.'.join(parts[:-1] + [terminal_name])
+
+    @property
+    def parent_pkg(self):
+        return self.module_name.rpartition('.')[0]
+
+class NamespacePackage:
+    modtype = ModuleType.namespace_package
+    def __init__(self, module_name):
+        self.module_name = module_name
+
+    def __hash__(self):
+        return hash(self.module_name)
+
+    def __eq__(self, other):
+        return isinstance(other, NamespacePackage) \
+               and self.module_name == other.module_name
+
+    def __repr__(self):
+        return 'NamespacePackage({!r})'.format(self.module_name)
 
 def get_module_suffixes(wheel_tag):
     py_tag, abi_tag, platform_tag = wheel_tag.split('-')
@@ -35,72 +98,51 @@ def get_module_suffixes(wheel_tag):
 
     return d
 
-def lib_files(namelist):
-    """Find files that would be installed into site-packages"""
-    for path in namelist:
-        parts = path.split('/')
-        if parts[0].endswith('.dist-info'):
-            continue
-        elif parts[0].endswith('.data'):
-            if len(parts) > 2 and parts[1] in ('platlib', 'purelib'):
-                yield '/'.join(parts[2:])
-        else:
-            yield path
-
 def find_module_files(namelist, wheel_tag):
-    for path in lib_files(namelist):
+    for path in namelist:
         for ext, modtype in get_module_suffixes(wheel_tag):
             if path.endswith(ext):
-                yield path, ext, modtype
-                break
+                res = FoundModule(path, ext, modtype)
+                if res.path_in_site_packages is not None:
+                    yield res
+                break # Don't check more extensions
 
-def parent_pkg(mod: str):
-    return mod.rpartition('.')[0]
 
-def identify_modules(namelist):
+def find_namespace_packages(modules: Iterable[FoundModule]):
     concrete_pkgs = set()
-    modules = set()
-    for path, ext, modtype in namelist:
-        parts = path.split('/')
-        if len(parts) > 1 and parts[-1] == '__init__.py':  # TODO: does __init__.pyc work?
-            pkg = '.'.join(parts[:-1])
-            # TODO: identify non PEP-420 namespace packages
-            concrete_pkgs.add(pkg)
-            yield pkg, ModuleType.package
+    leaf_modules = set()
+    for mod in modules:
+        if mod.modtype is ModuleType.package:
+            concrete_pkgs.add(mod)
         else:
-            terminal_name = parts[-1][:-len(ext)]
-            mod = '.'.join(parts[:-1] + [terminal_name])
-            yield mod, modtype
-            modules.add(mod)
+            leaf_modules.add(mod)
 
+    # TODO: identify non PEP-420 namespace packages
     namespace_pkgs = set()
-    for mod in modules | concrete_pkgs:
-        pkg = parent_pkg(mod)
+    for mod in leaf_modules | concrete_pkgs:
+        pkg = mod.parent_pkg
         if pkg and (pkg not in concrete_pkgs):
             namespace_pkgs.add(pkg)
-    for nspkg in sorted(namespace_pkgs):
-        yield nspkg, ModuleType.namespace_package
+    for pkgname in sorted(namespace_pkgs):
+        yield NamespacePackage(pkgname)
 
 def summarise_modules(modules):
     """Return top-level importable names, and the contents of any namespace packages"""
-    concrete, namespace_pkgs = set(), set()
-    for modname, modtype in modules:
-        if modtype is ModuleType.namespace_package:
-            namespace_pkgs.add(modname)
-        else:
-            concrete.add(modname)
-
-    for modname in sorted(concrete):
-        parent = parent_pkg(modname)
-        if (parent == '') or (parent in namespace_pkgs):
-            yield modname
+    nspkg_names = {p.module_name for p in find_namespace_packages(modules)}
+    for mod in sorted(modules, key=lambda m: m.path_in_site_packages):
+        parent = mod.parent_pkg
+        if (parent == '') or (parent in nspkg_names):
+            yield mod
 
 def find_modules_from_whl_path(path):
     name, version, wheel_tag = os.path.basename(path).split('-', 2)
     zf = zipfile.ZipFile(str(path))
-    module_files = list(find_module_files(zf.namelist(), wheel_tag))
-    return identify_modules(module_files)
+    return find_module_files(zf.namelist(), wheel_tag)
+
+def summary_from_whl_path(path):
+    modules = list(find_modules_from_whl_path(path))
+    return summarise_modules(modules)
 
 if __name__ == '__main__':
-    for p in summarise_modules(find_modules_from_whl_path(sys.argv[1])):
+    for p in summary_from_whl_path(sys.argv[1]):
         print(p)
