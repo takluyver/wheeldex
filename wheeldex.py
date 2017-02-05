@@ -1,7 +1,7 @@
 import os
 from enum import Enum
 import sys
-from typing import Iterable
+from typing import Iterable, List
 import zipfile
 
 class ModuleType(Enum):
@@ -108,27 +108,24 @@ def find_module_files(namelist, wheel_tag):
                 break # Don't check more extensions
 
 
-def find_namespace_packages(modules: Iterable[FoundModule]):
+def find_namespace_packages(modules: List[FoundModule]):
     concrete_pkgs = set()
-    leaf_modules = set()
     for mod in modules:
         if mod.modtype is ModuleType.package:
-            concrete_pkgs.add(mod)
-        else:
-            leaf_modules.add(mod)
+            concrete_pkgs.add(mod.module_name)
 
     # TODO: identify non PEP-420 namespace packages
     namespace_pkgs = set()
-    for mod in leaf_modules | concrete_pkgs:
+    for mod in modules:
         pkg = mod.parent_pkg
         if pkg and (pkg not in concrete_pkgs):
             namespace_pkgs.add(pkg)
     for pkgname in sorted(namespace_pkgs):
-        yield NamespacePackage(pkgname)
+        yield pkgname
 
 def summarise_modules(modules):
     """Return top-level importable names, and the contents of any namespace packages"""
-    nspkg_names = {p.module_name for p in find_namespace_packages(modules)}
+    nspkg_names = set(find_namespace_packages(modules))
     for mod in sorted(modules, key=lambda m: m.path_in_site_packages):
         parent = mod.parent_pkg
         if (parent == '') or (parent in nspkg_names):
