@@ -15,10 +15,6 @@ class FoundModule:
     def __init__(self, path_in_archive, ext, modtype):
         self.path_in_archive = path_in_archive
         self.ext = ext
-        parts = self.path_in_archive.split('/')
-        # TODO: does __init__.pyc work?
-        if len(parts) > 1 and parts[-1] == '__init__.py':
-            modtype = ModuleType.package
         self.modtype = modtype
 
     def __hash__(self):
@@ -47,12 +43,8 @@ class FoundModule:
 
     @property
     def module_name(self):
-        parts = self.path_in_site_packages.split('/')
-        if self.modtype is ModuleType.package:
-            return '.'.join(parts[:-1])
-        else:
-            terminal_name = parts[-1][:-len(self.ext)]
-            return '.'.join(parts[:-1] + [terminal_name])
+        path_no_ext = self.path_in_site_packages[:-len(self.ext)]
+        return path_no_ext.replace('/', '.')
 
     @property
     def parent_pkg(self):
@@ -76,6 +68,8 @@ class NamespacePackage:
 def get_module_suffixes(wheel_tag):
     py_tag, abi_tag, platform_tag = wheel_tag.split('-')
     d = [
+        ('/__init__.py', ModuleType.package),
+        # TODO: does __init__.pyc make a package?
         ('.py', ModuleType.source),
         ('.pyc', ModuleType.bytecode),
     ]
