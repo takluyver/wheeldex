@@ -1,15 +1,15 @@
+"""Index Python modules and packages inside a wheel."""
+
 import ast
 from astcheck import name_or_attr
 import astsearch
-import os
-from os.path import basename, splitext
 from enum import Enum
+from os.path import basename, splitext
 import sys
-from typing import Iterable, List
+from typing import List
 import zipfile
 
-from collections import defaultdict
-
+__version__ = '0.1'
 
 class ModuleType(Enum):
     source = 1
@@ -57,20 +57,6 @@ class FoundModule:
     def parent_pkg(self):
         return self.module_name.rpartition('.')[0]
 
-class NamespacePackage:
-    modtype = ModuleType.namespace_package
-    def __init__(self, module_name):
-        self.module_name = module_name
-
-    def __hash__(self):
-        return hash(self.module_name)
-
-    def __eq__(self, other):
-        return isinstance(other, NamespacePackage) \
-               and self.module_name == other.module_name
-
-    def __repr__(self):
-        return 'NamespacePackage({!r})'.format(self.module_name)
 
 def get_module_suffixes(wheel_tag):
     py_tag, abi_tag, platform_tag = wheel_tag.split('-')
@@ -143,22 +129,10 @@ def find_namespace_packages(modules: List[FoundModule]):
     for pkgname in sorted(namespace_pkgs):
         yield pkgname
 
-def summarise_modules(modules):
-    """Return top-level importable names, and the contents of any namespace packages"""
-    nspkg_names = set(find_namespace_packages(modules))
-    for mod in sorted(modules, key=lambda m: m.path_in_site_packages):
-        parent = mod.parent_pkg
-        if (parent == '') or (parent in nspkg_names):
-            yield mod
-
 def find_modules_from_whl_path(path):
     name, version, wheel_tag = splitext(basename(path))[0].split('-', 2)
     zf = zipfile.ZipFile(str(path))
     return find_module_files(zf, wheel_tag)
-
-def summary_from_whl_path(path):
-    modules = list(find_modules_from_whl_path(path))
-    return summarise_modules(modules)
 
 def print_summary_from_whl_path(path):
     modules = list(find_modules_from_whl_path(path))
