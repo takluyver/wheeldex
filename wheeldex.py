@@ -1,8 +1,15 @@
+import ast
+from astcheck import name_or_attr
+import astsearch
 import os
+from os.path import basename, splitext
 from enum import Enum
 import sys
 from typing import Iterable, List
 import zipfile
+
+from collections import defaultdict
+
 
 class ModuleType(Enum):
     source = 1
@@ -86,14 +93,30 @@ def get_module_suffixes(wheel_tag):
         d.append(('.so', ModuleType.extension))
 
     elif platform_tag.startswith('win'):
+        if py_tag.startswith('cp'):
+            d.append(('.%s-%s.pyd' % (py_tag, platform_tag), ModuleType.extension))
         d.append(('.pyd', ModuleType.extension))
 
     # TODO: a load of other cases
 
     return d
 
-def find_module_files(namelist, wheel_tag):
-    for path in namelist:
+def check_namespace_pkg(init_code):
+    init_ast = ast.parse(init_code)
+    pat = ast.Assign(targets=[ast.Name(id='__path__')],
+                     values=ast.Call(func=name_or_attr('extend_path')))
+    matches = astsearch.ASTPatternFinder(pat).scan_ast(init_ast)
+    return bool(list(matches))
+
+def find_module_files(zf: zipfile.ZipFile, wheel_tag):
+    for path in zf.namelist():
+        if path.endswith('/__init__.py'):
+            modtype = ModuleType.package
+            if check_namespace_pkg(zf.read(path)):
+                modtype = ModuleType.namespace_package
+            yield FoundModule(path, '/__init__.py', modtype)
+            continue
+
         for ext, modtype in get_module_suffixes(wheel_tag):
             if path.endswith(ext):
                 res = FoundModule(path, ext, modtype)
@@ -104,12 +127,15 @@ def find_module_files(namelist, wheel_tag):
 
 def find_namespace_packages(modules: List[FoundModule]):
     concrete_pkgs = set()
+    namespace_pkgs = set()
     for mod in modules:
         if mod.modtype is ModuleType.package:
             concrete_pkgs.add(mod.module_name)
+        if mod.modtype is ModuleType.namespace_package:
+            namespace_pkgs.add(mod.module_name)
 
-    # TODO: identify non PEP-420 namespace packages
-    namespace_pkgs = set()
+    # Identify PEP 420 namespace packages, which are directories containing
+    # modules *without* an __init__.py
     for mod in modules:
         pkg = mod.parent_pkg
         if pkg and (pkg not in concrete_pkgs):
@@ -126,14 +152,35 @@ def summarise_modules(modules):
             yield mod
 
 def find_modules_from_whl_path(path):
-    name, version, wheel_tag = os.path.basename(path).split('-', 2)
+    name, version, wheel_tag = splitext(basename(path))[0].split('-', 2)
     zf = zipfile.ZipFile(str(path))
-    return find_module_files(zf.namelist(), wheel_tag)
+    return find_module_files(zf, wheel_tag)
 
 def summary_from_whl_path(path):
     modules = list(find_modules_from_whl_path(path))
     return summarise_modules(modules)
 
+def print_summary_from_whl_path(path):
+    modules = list(find_modules_from_whl_path(path))
+
+    toplevel_modules = sorted([m.module_name for m in modules
+                           if not m.parent_pkg \
+                           and m.modtype is not ModuleType.namespace_package])
+    print(len(toplevel_modules), 'top-level modules:')
+    for modname in toplevel_modules:
+        print(' ', modname)
+
+    nspkg_contents = {name: [] for name in find_namespace_packages(modules)}
+    for mod in modules:
+        parent = mod.parent_pkg
+        if parent in nspkg_contents:
+            nspkg_contents[parent].append(mod)
+
+    for nspkg, contents in sorted(nspkg_contents.items()):
+        print(nspkg, 'namespace package ({}):'.format(len(contents)))
+        for modname in sorted([m.module_name for m in contents]):
+            print(' ', modname)
+
+
 if __name__ == '__main__':
-    for p in summary_from_whl_path(sys.argv[1]):
-        print(p)
+    print_summary_from_whl_path(sys.argv[1])
