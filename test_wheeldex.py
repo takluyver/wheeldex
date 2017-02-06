@@ -49,3 +49,4 @@ def test_check_namespace_pkg():
     assert not check_namespace_pkg(b'')
     # We look for '__path__ == extend_path(...)'
     assert not check_namespace_pkg(b'foo = extend_path()')
+    assert not check_namespace_pkg(b'raise = 2')

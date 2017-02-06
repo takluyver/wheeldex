@@ -88,7 +88,11 @@ def get_module_suffixes(wheel_tag):
     return d
 
 def check_namespace_pkg(init_code):
-    init_ast = ast.parse(init_code)
+    try:
+        init_ast = ast.parse(init_code)
+    except SyntaxError:
+        # If not valid syntax on this Python, assume it's a normal package
+        return False
     pat = ast.Assign(targets=[ast.Name(id='__path__')],
                      values=ast.Call(func=name_or_attr('extend_path')))
     matches = astsearch.ASTPatternFinder(pat).scan_ast(init_ast)
